@@ -20,6 +20,19 @@ import javafx.scene.text.Font;
 import javafx.scene.text.Text;
 import javafx.stage.Stage;
 
+import javafx.stage.FileChooser;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
+import javafx.embed.swing.SwingFXUtils;
+import javafx.scene.SnapshotParameters;
+import javax.imageio.ImageIO;
+import java.io.File;
+import java.io.IOException;
+import java.util.function.BiConsumer;
+import javafx.geometry.BoundingBox;
+import javafx.scene.image.WritableImage;
+import javafx.scene.Group;
+
 public class MainApp extends Application {
 
     private Pane canvas;
@@ -116,8 +129,11 @@ public class MainApp extends Application {
 
         // clear selection
         canvas.setOnMousePressed(e -> {
-            if (e.getTarget() == canvas) clearSelection();
-        });
+            if (e.getTarget() == canvas) {
+              clearSelection();
+              updateHandlesVisibility(null);
+            }
+        }); 
 
         // Wrap canvas (padding around)
         StackPane canvasWrapper = new StackPane(canvas);
@@ -140,8 +156,8 @@ public class MainApp extends Application {
         miFlyer.setOnAction(e -> resizeCanvasAndGoTop(850, 1100));
 
         btnText.setOnAction(e -> addTextToCanvas("Edit me"));
-        btnUpload.setOnAction(e -> System.out.println("Upload later"));
-        btnDL.setOnAction(e -> System.out.println("Download later"));
+        btnUpload.setOnAction(e -> openImageFileChooser());
+        btnDL.setOnAction(e -> exportCanvasToPNG());
 
         // Apply text controls when changed
         textColorPicker.setOnAction(e -> applyTextStyleToSelectedIfText());
@@ -191,6 +207,7 @@ public class MainApp extends Application {
         setCanvasSize(1000, 700);
         canvas.getChildren().clear();
         clearSelection();
+        updateHandlesVisibility(null);
         scrollPane.setHvalue(0);
         scrollPane.setVvalue(0);
         canvasBgPicker.setValue(Color.WHITE);
@@ -200,6 +217,7 @@ public class MainApp extends Application {
     private void resizeCanvasAndGoTop(double w, double h) {
         setCanvasSize(w, h);
         clearSelection();
+        updateHandlesVisibility(null);
         scrollPane.setHvalue(0);
         scrollPane.setVvalue(0);
     }
@@ -224,6 +242,7 @@ public class MainApp extends Application {
                 fontSizeSpinner.getValueFactory().setValue(newSize); // keeps UI synced
                 t.setFont(Font.font(newSize));
                 updateSelectionBox();
+                updateHandlesVisibility(selectedNode);
                 e.consume();
             }
         });
@@ -231,7 +250,176 @@ public class MainApp extends Application {
         canvas.getChildren().add(t);
         selectNode(t);
     }
+    
+    // upload image
+    private void openImageFileChooser() {
+      FileChooser fileChooser = new FileChooser();
+      fileChooser.setTitle("Select an Image");
+      fileChooser.getExtensionFilters().addAll(
+              new FileChooser.ExtensionFilter("Image Files", "*.png", "*.jpg", "*.jpeg")
+      );
+      File file = fileChooser.showOpenDialog(canvas.getScene().getWindow());
+      if (file != null) {
+          try {
+              Image img = new Image(file.toURI().toString());
+              if (img.isError()) throw img.getException();
+              addImageToCanvas(img);
+          } catch (Exception ex) {
+              System.err.println("Failed to load image: " + ex.getMessage());
+              Alert alert = new Alert(Alert.AlertType.ERROR, "Cannot load selected image.");
+              alert.showAndWait();
+          }
+      }
+    }
+    
+    //add image to canvas
+    private void addImageToCanvas(Image img) {
+        if (img == null) return;
 
+        ImageView iv = new ImageView(img);
+        iv.setPreserveRatio(true);
+        double initWidth = Math.min(400, img.getWidth());
+        iv.setFitWidth(initWidth);
+
+        // Wrap image + handles in a group
+        Group g = new Group(iv);
+        g.setLayoutX((canvas.getPrefWidth() - iv.getFitWidth()) / 2);
+        g.setLayoutY((canvas.getPrefHeight() - iv.getBoundsInParent().getHeight()) / 2);
+
+        enableResize(iv, g);       // attach handles
+        enableDragAndSelect(g);    // drag the group
+
+        canvas.getChildren().add(g);
+        g.toFront();
+        selectNode(g);
+    }
+    
+    // resize image with indicator
+    private void enableResize(ImageView iv, Group g) {
+        final double handleSize = 10;
+
+        Rectangle topLeft     = new Rectangle(handleSize, handleSize, Color.rgb(0,120,215,0.6));
+        Rectangle topRight    = new Rectangle(handleSize, handleSize, Color.rgb(0,120,215,0.6));
+        Rectangle bottomLeft  = new Rectangle(handleSize, handleSize, Color.rgb(0,120,215,0.6));
+        Rectangle bottomRight = new Rectangle(handleSize, handleSize, Color.rgb(0,120,215,0.6));
+
+        g.getChildren().addAll(topLeft, topRight, bottomLeft, bottomRight);
+
+        Runnable updateHandles = () -> {
+            Bounds b = iv.getBoundsInParent(); // group-local bounds
+            topLeft.setX(b.getMinX() - handleSize/2);
+            topLeft.setY(b.getMinY() - handleSize/2);
+
+            topRight.setX(b.getMaxX() - handleSize/2);
+            topRight.setY(b.getMinY() - handleSize/2);
+
+            bottomLeft.setX(b.getMinX() - handleSize/2);
+            bottomLeft.setY(b.getMaxY() - handleSize/2);
+
+            bottomRight.setX(b.getMaxX() - handleSize/2);
+            bottomRight.setY(b.getMaxY() - handleSize/2);
+        };
+
+        updateHandles.run();
+
+        BiConsumer<Rectangle, String> setupDrag = (handle, corner) -> {
+            final double[] initWidth = new double[1];
+            final double[] initHeight = new double[1];
+            final double[] mouseStartX = new double[1];
+            final double[] mouseStartY = new double[1];
+
+            handle.setOnMousePressed(e -> {
+                initWidth[0] = iv.getFitWidth();
+                initHeight[0] = iv.getFitHeight();
+                mouseStartX[0] = e.getSceneX();
+                mouseStartY[0] = e.getSceneY();
+                selectNode(g);
+                e.consume();
+            });
+
+            handle.setOnMouseDragged(e -> {
+                double deltaX = e.getSceneX() - mouseStartX[0];
+                double deltaY = e.getSceneY() - mouseStartY[0];
+
+                double newWidth = initWidth[0];
+                double newHeight = initHeight[0];
+
+                switch(corner) {
+                    case "topLeft":
+                        newWidth  = Math.max(20, initWidth[0] - deltaX);
+                        newHeight = Math.max(20, initHeight[0] - deltaY);
+                        break;
+                    case "topRight":
+                        newWidth  = Math.max(20, initWidth[0] + deltaX);
+                        newHeight = Math.max(20, initHeight[0] - deltaY);
+                        break;
+                    case "bottomLeft":
+                        newWidth  = Math.max(20, initWidth[0] - deltaX);
+                        newHeight = Math.max(20, initHeight[0] + deltaY);
+                        break;
+                    case "bottomRight":
+                        newWidth  = Math.max(20, initWidth[0] + deltaX);
+                        newHeight = Math.max(20, initHeight[0] + deltaY);
+                        break;
+                }
+
+                iv.setFitWidth(newWidth);
+                iv.setFitHeight(newHeight);
+
+                updateHandles.run();
+                updateSelectionBox();
+                e.consume();
+            });
+        };
+
+        setupDrag.accept(topLeft, "topLeft");
+        setupDrag.accept(topRight, "topRight");
+        setupDrag.accept(bottomLeft, "bottomLeft");
+        setupDrag.accept(bottomRight, "bottomRight");
+    }
+    
+    private void updateHandlesVisibility(Node n) {
+        if (n instanceof Group g) {
+            for (Node child : g.getChildren()) {
+                if (child instanceof Rectangle r && r.getWidth() == 10 && r.getHeight() == 10) {
+                    r.setVisible(true);
+                }
+            }
+        }
+        
+        for (Node node : canvas.getChildren()) {
+            if (node instanceof Group otherGroup && otherGroup != n) {
+                for (Node child : otherGroup.getChildren()) {
+                    if (child instanceof Rectangle r && r.getWidth() == 10 && r.getHeight() == 10) {
+                        r.setVisible(false);
+                    }
+                }
+            }
+        }
+    }
+    
+    // export to png
+    private void exportCanvasToPNG() {
+      // Take snapshot of the canvas
+      SnapshotParameters params = new SnapshotParameters();
+      params.setFill(Color.TRANSPARENT); 
+      WritableImage snapshot = canvas.snapshot(params, null);
+      FileChooser fileChooser = new FileChooser();
+      fileChooser.setTitle("Save Canvas as PNG");
+      fileChooser.getExtensionFilters().add(
+          new FileChooser.ExtensionFilter("PNG Image", "*.png")
+      );
+      File file = fileChooser.showSaveDialog(canvas.getScene().getWindow());
+      if (file != null) {
+          try {
+              ImageIO.write(SwingFXUtils.fromFXImage(snapshot, null), "png", file);
+              System.out.println("Canvas saved to: " + file.getAbsolutePath());
+          } catch (IOException e) {
+              e.printStackTrace();
+          }
+      }
+    }
+    
     // Double-click edit the text edit 
     private void startInlineEdit(Text t) {
         TextField editor = new TextField(t.getText());
@@ -260,6 +448,7 @@ public class MainApp extends Application {
             t.setText(editor.getText());
             canvas.getChildren().remove(editor);
             updateSelectionBox();
+            updateHandlesVisibility(selectedNode);
         };
 
         editor.setOnAction(e -> finish.run());
@@ -273,6 +462,7 @@ public class MainApp extends Application {
             t.setFill(textColorPicker.getValue());
             t.setFont(Font.font(fontSizeSpinner.getValue()));
             updateSelectionBox();
+            updateHandlesVisibility(selectedNode);
         }
     }
 
@@ -339,6 +529,7 @@ public class MainApp extends Application {
         }
 
         updateSelectionBox();
+        updateHandlesVisibility(selectedNode);
     }
 
     private void updateSelectionBox() {
@@ -348,7 +539,31 @@ public class MainApp extends Application {
         }
         if (selectedNode == null) return;
 
-        Bounds b = selectedNode.getBoundsInParent();
+        Bounds b = null;
+
+        if (selectedNode instanceof Group g) {
+            // find the first ImageView inside the group
+            for (Node child : g.getChildren()) {
+                if (child instanceof ImageView iv) {
+                    // convert ImageView bounds to Scene coordinates, then to canvas coordinates
+                    Bounds sceneBounds = iv.localToScene(iv.getBoundsInLocal());
+                    Bounds canvasBounds = canvas.sceneToLocal(sceneBounds);
+
+                    b = new BoundingBox(
+                            canvasBounds.getMinX(),
+                            canvasBounds.getMinY(),
+                            canvasBounds.getWidth(),
+                            canvasBounds.getHeight()
+                    );
+                    break; // use the first ImageView only
+                }
+            }
+        }
+
+        if (b == null) {
+            // fallback for Text, Rectangle, or other nodes
+            b = selectedNode.getBoundsInParent();
+        }
         selectionBox = new Rectangle(b.getMinX(), b.getMinY(), b.getWidth(), b.getHeight());
         selectionBox.setFill(Color.TRANSPARENT);
         selectionBox.setStroke(Color.web("#4a90e2"));
@@ -372,6 +587,7 @@ public class MainApp extends Application {
         if (selectedNode == null) return;
         canvas.getChildren().remove(selectedNode);
         clearSelection();
+        updateHandlesVisibility(null);
     }
 
     // DRAG + SELECT + DOUBLE CLICK EDIT 
@@ -389,6 +605,7 @@ public class MainApp extends Application {
             t.setLayoutX(e.getSceneX() - d.x);
             t.setLayoutY(e.getSceneY() - d.y);
             updateSelectionBox();
+            updateHandlesVisibility(selectedNode);
             e.consume();
         });
 
@@ -414,6 +631,7 @@ public class MainApp extends Application {
             n.setLayoutX(e.getSceneX() - d.x);
             n.setLayoutY(e.getSceneY() - d.y);
             updateSelectionBox();
+            updateHandlesVisibility(selectedNode);
             e.consume();
         });
     }
