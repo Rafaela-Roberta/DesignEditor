@@ -5,12 +5,20 @@
 package com.designeditor;
 
 import javafx.application.Application;
+import javafx.application.Platform;
+import javafx.embed.swing.SwingFXUtils;
+import javafx.geometry.BoundingBox;
 import javafx.geometry.Bounds;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.Group;
 import javafx.scene.Node;
 import javafx.scene.Scene;
+import javafx.scene.SnapshotParameters;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
+import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.*;
@@ -18,22 +26,27 @@ import javafx.scene.paint.Color;
 import javafx.scene.shape.Rectangle;
 import javafx.scene.text.Font;
 import javafx.scene.text.Text;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
-import javafx.stage.FileChooser;
-import javafx.scene.image.Image;
-import javafx.scene.image.ImageView;
-import javafx.embed.swing.SwingFXUtils;
-import javafx.scene.SnapshotParameters;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import javax.imageio.ImageIO;
-import java.io.File;
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.function.BiConsumer;
-import javafx.geometry.BoundingBox;
-import javafx.scene.image.WritableImage;
-import javafx.scene.Group;
+
+import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 public class MainApp extends Application {
+
+    private static final String GEMINI_API_KEY = "AIzaSyA-8gLbDG8Qv1Tqc7vu0ASbm5lckhrOX-8";
 
     private Pane canvas;
     private ScrollPane scrollPane;
@@ -42,12 +55,25 @@ public class MainApp extends Application {
     private Node selectedNode = null;
     private Rectangle selectionBox = null;
 
-    // Text controls 
+    // Text controls
     private ColorPicker textColorPicker;
     private Spinner<Integer> fontSizeSpinner;
 
     // Canvas background control
     private ColorPicker canvasBgPicker;
+
+    // API
+    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    // Gallery images
+    private final String[] galleryImages = {
+            "coding.png",
+            "computer.png",
+            "demo.png",
+            "happyperson.png",
+            "house.png"
+    };
 
     @Override
     public void start(Stage stage) {
@@ -80,15 +106,17 @@ public class MainApp extends Application {
         // Tools
         Label lbTools = labelTitle("Tools");
 
-        Button btnText   = new Button("Text");
-        Button btnUpload = new Button("Upload");
-        Button btnDL     = new Button("Download PNG");
+        Button btnText    = new Button("Text");
+        Button btnGallery = new Button("Gallery");
+        Button btnUpload  = new Button("Upload");
+        Button btnDL      = new Button("Download PNG");
 
         styleButton(btnText);
+        styleButton(btnGallery);
         styleButton(btnUpload);
         styleButton(btnDL);
 
-        // Text options under Text button 
+        // Text options
         Label lbTextOptions = labelSmall("Text options");
 
         textColorPicker = new ColorPicker(Color.BLACK);
@@ -106,7 +134,7 @@ public class MainApp extends Application {
         canvasBgPicker.setMaxWidth(Double.MAX_VALUE);
         stylePicker(canvasBgPicker);
 
-        // AI box inside sidebar 
+        // AI box
         VBox aiBox = buildAiBox();
         aiBox.setMaxWidth(Double.MAX_VALUE);
 
@@ -114,14 +142,14 @@ public class MainApp extends Application {
         leftBar.getChildren().addAll(
                 lbTemplates, templatesMenu,
                 new Separator(),
-                lbTools, btnText, btnUpload, btnDL,
+                lbTools, btnText, btnGallery, btnUpload, btnDL,
                 lbTextOptions, new Label("Pick your color"), textColorPicker, new Label("Font size"), fontSizeSpinner,
                 lbCanvasOptions, new Label("Background color"), canvasBgPicker,
                 new Separator(),
                 aiBox
         );
 
-        // CANVAS + SCROLL 
+        // CANVAS + SCROLL
         canvas = new Pane();
         setCanvasSize(1000, 700);
         setCanvasBackground(canvasBgPicker.getValue());
@@ -130,12 +158,12 @@ public class MainApp extends Application {
         // clear selection
         canvas.setOnMousePressed(e -> {
             if (e.getTarget() == canvas) {
-              clearSelection();
-              updateHandlesVisibility(null);
+                clearSelection();
+                updateHandlesVisibility(null);
             }
-        }); 
+        });
 
-        // Wrap canvas (padding around)
+        // Wrap canvas
         StackPane canvasWrapper = new StackPane(canvas);
         canvasWrapper.setPadding(new Insets(20));
         canvasWrapper.setStyle("-fx-background-color: white;");
@@ -149,13 +177,14 @@ public class MainApp extends Application {
         scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
 
-        //ACTIONS 
+        // ACTIONS
         miBlank.setOnAction(e -> resetCanvas());
         miPost.setOnAction(e -> resizeCanvasAndGoTop(1080, 1080));
         miStory.setOnAction(e -> resizeCanvasAndGoTop(1080, 1920));
         miFlyer.setOnAction(e -> resizeCanvasAndGoTop(850, 1100));
 
         btnText.setOnAction(e -> addTextToCanvas("Edit me"));
+        btnGallery.setOnAction(e -> openGalleryWindow());
         btnUpload.setOnAction(e -> openImageFileChooser());
         btnDL.setOnAction(e -> exportCanvasToPNG());
 
@@ -183,7 +212,7 @@ public class MainApp extends Application {
         stage.show();
     }
 
-    // CANVAS HELPERS 
+    // CANVAS HELPERS
     private void setCanvasSize(double w, double h) {
         canvas.setPrefSize(w, h);
         canvas.setMinSize(w, h);
@@ -191,13 +220,12 @@ public class MainApp extends Application {
     }
 
     private void setCanvasBorder() {
-        // border only; background handled separately
         canvas.setStyle("-fx-border-color: #d0d0d0; -fx-border-width: 2;");
     }
 
     private void setCanvasBackground(Color c) {
         String hex = toHex(c);
-        
+
         canvas.setStyle("-fx-background-color: " + hex + ";" +
                 "-fx-border-color: #d0d0d0;" +
                 "-fx-border-width: 2;");
@@ -222,15 +250,15 @@ public class MainApp extends Application {
         scrollPane.setVvalue(0);
     }
 
-    // TEXT 
+    // TEXT
     private void addTextToCanvas(String content) {
         Text t = new Text(content);
         t.setLayoutX(120);
         t.setLayoutY(160);
+        t.setWrappingWidth(300);
 
-        // Use current controls as defaults
         t.setFill(textColorPicker.getValue());
-        t.setFont(Font.font(fontSizeSpinner.getValue()));
+        t.setFont(Font.font(Math.min(fontSizeSpinner.getValue(), 28)));
 
         enableDragSelectAndEdit(t);
 
@@ -239,7 +267,7 @@ public class MainApp extends Application {
             if (selectedNode == t) {
                 int size = (int) t.getFont().getSize();
                 int newSize = (int) Math.max(8, Math.min(200, size + (e.getDeltaY() > 0 ? 2 : -2)));
-                fontSizeSpinner.getValueFactory().setValue(newSize); // keeps UI synced
+                fontSizeSpinner.getValueFactory().setValue(newSize);
                 t.setFont(Font.font(newSize));
                 updateSelectionBox();
                 updateHandlesVisibility(selectedNode);
@@ -250,51 +278,122 @@ public class MainApp extends Application {
         canvas.getChildren().add(t);
         selectNode(t);
     }
-    
-    // upload image
+
+    // UPLOAD IMAGE
     private void openImageFileChooser() {
-      FileChooser fileChooser = new FileChooser();
-      fileChooser.setTitle("Select an Image");
-      fileChooser.getExtensionFilters().addAll(
-              new FileChooser.ExtensionFilter("Image Files", "*.png", "*.jpg", "*.jpeg")
-      );
-      File file = fileChooser.showOpenDialog(canvas.getScene().getWindow());
-      if (file != null) {
-          try {
-              Image img = new Image(file.toURI().toString());
-              if (img.isError()) throw img.getException();
-              addImageToCanvas(img);
-          } catch (Exception ex) {
-              System.err.println("Failed to load image: " + ex.getMessage());
-              Alert alert = new Alert(Alert.AlertType.ERROR, "Cannot load selected image.");
-              alert.showAndWait();
-          }
-      }
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Select an Image");
+        fileChooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("Image Files", "*.png", "*.jpg", "*.jpeg")
+        );
+        File file = fileChooser.showOpenDialog(canvas.getScene().getWindow());
+        if (file != null) {
+            try {
+                Image img = new Image(file.toURI().toString());
+                if (img.isError()) throw img.getException();
+                addImageToCanvas(img);
+            } catch (Exception ex) {
+                Alert alert = new Alert(Alert.AlertType.ERROR, "Cannot load selected image.");
+                alert.showAndWait();
+            }
+        }
     }
-    
-    //add image to canvas
+
+    // GALLERY
+      private void openGalleryWindow() {
+    Stage galleryStage = new Stage();
+    galleryStage.setTitle("Gallery");
+
+    TilePane tilePane = new TilePane();
+    tilePane.setPadding(new Insets(15));
+    tilePane.setHgap(12);
+    tilePane.setVgap(12);
+    tilePane.setPrefColumns(2);
+
+    for (String fileName : galleryImages) {
+        try {
+            Path imagePath = Paths.get("images", fileName);
+            File file = imagePath.toFile();
+
+            System.out.println("Trying: " + file.getAbsolutePath());
+            System.out.println("Exists: " + file.exists());
+
+            if (!file.exists()) {
+                continue;
+            }
+
+            Image img = new Image(file.toURI().toString());
+
+            ImageView preview = new ImageView(img);
+            preview.setFitWidth(120);
+            preview.setFitHeight(120);
+            preview.setPreserveRatio(true);
+
+            Button imgButton = new Button();
+            imgButton.setGraphic(preview);
+            imgButton.setStyle(
+                    "-fx-background-color: white;" +
+                    "-fx-border-color: #d0d0d0;" +
+                    "-fx-border-radius: 10;" +
+                    "-fx-background-radius: 10;" +
+                    "-fx-padding: 8;"
+            );
+
+            imgButton.setOnAction(e -> {
+                Image fullImg = new Image(file.toURI().toString());
+                addImageToCanvas(fullImg);
+                galleryStage.close();
+            });
+
+            VBox itemBox = new VBox(5);
+            itemBox.setAlignment(Pos.CENTER);
+            itemBox.getChildren().addAll(imgButton, new Label(fileName));
+            tilePane.getChildren().add(itemBox);
+
+        } catch (Exception ex) {
+            System.out.println("Error loading image: " + fileName);
+            ex.printStackTrace();
+        }
+    }
+
+    if (tilePane.getChildren().isEmpty()) {
+        Alert alert = new Alert(Alert.AlertType.ERROR,
+                "No gallery images were loaded.\nCheck if the images folder is in the project root.");
+        alert.showAndWait();
+        return;
+    }
+
+    ScrollPane sp = new ScrollPane(tilePane);
+    sp.setFitToWidth(true);
+    sp.setStyle("-fx-background-color: white;");
+
+    Scene galleryScene = new Scene(sp, 350, 400);
+    galleryStage.setScene(galleryScene);
+    galleryStage.show();
+}
+
+    // ADD IMAGE TO CANVAS
     private void addImageToCanvas(Image img) {
         if (img == null) return;
 
         ImageView iv = new ImageView(img);
         iv.setPreserveRatio(true);
-        double initWidth = Math.min(400, img.getWidth());
+        double initWidth = Math.min(400, Math.max(100, img.getWidth()));
         iv.setFitWidth(initWidth);
 
-        // Wrap image + handles in a group
         Group g = new Group(iv);
         g.setLayoutX((canvas.getPrefWidth() - iv.getFitWidth()) / 2);
         g.setLayoutY((canvas.getPrefHeight() - iv.getBoundsInParent().getHeight()) / 2);
 
-        enableResize(iv, g);       // attach handles
-        enableDragAndSelect(g);    // drag the group
+        enableResize(iv, g);
+        enableDragAndSelect(g);
 
         canvas.getChildren().add(g);
         g.toFront();
         selectNode(g);
     }
-    
-    // resize image with indicator
+
+    // RESIZE IMAGE WITH INDICATOR
     private void enableResize(ImageView iv, Group g) {
         final double handleSize = 10;
 
@@ -306,18 +405,18 @@ public class MainApp extends Application {
         g.getChildren().addAll(topLeft, topRight, bottomLeft, bottomRight);
 
         Runnable updateHandles = () -> {
-            Bounds b = iv.getBoundsInParent(); // group-local bounds
-            topLeft.setX(b.getMinX() - handleSize/2);
-            topLeft.setY(b.getMinY() - handleSize/2);
+            Bounds b = iv.getBoundsInParent();
+            topLeft.setX(b.getMinX() - handleSize / 2);
+            topLeft.setY(b.getMinY() - handleSize / 2);
 
-            topRight.setX(b.getMaxX() - handleSize/2);
-            topRight.setY(b.getMinY() - handleSize/2);
+            topRight.setX(b.getMaxX() - handleSize / 2);
+            topRight.setY(b.getMinY() - handleSize / 2);
 
-            bottomLeft.setX(b.getMinX() - handleSize/2);
-            bottomLeft.setY(b.getMaxY() - handleSize/2);
+            bottomLeft.setX(b.getMinX() - handleSize / 2);
+            bottomLeft.setY(b.getMaxY() - handleSize / 2);
 
-            bottomRight.setX(b.getMaxX() - handleSize/2);
-            bottomRight.setY(b.getMaxY() - handleSize/2);
+            bottomRight.setX(b.getMaxX() - handleSize / 2);
+            bottomRight.setY(b.getMaxY() - handleSize / 2);
         };
 
         updateHandles.run();
@@ -377,7 +476,7 @@ public class MainApp extends Application {
         setupDrag.accept(bottomLeft, "bottomLeft");
         setupDrag.accept(bottomRight, "bottomRight");
     }
-    
+
     private void updateHandlesVisibility(Node n) {
         if (n instanceof Group g) {
             for (Node child : g.getChildren()) {
@@ -386,7 +485,7 @@ public class MainApp extends Application {
                 }
             }
         }
-        
+
         for (Node node : canvas.getChildren()) {
             if (node instanceof Group otherGroup && otherGroup != n) {
                 for (Node child : otherGroup.getChildren()) {
@@ -397,30 +496,29 @@ public class MainApp extends Application {
             }
         }
     }
-    
-    // export to png
+
+    // EXPORT TO PNG
     private void exportCanvasToPNG() {
-      // Take snapshot of the canvas
-      SnapshotParameters params = new SnapshotParameters();
-      params.setFill(Color.TRANSPARENT); 
-      WritableImage snapshot = canvas.snapshot(params, null);
-      FileChooser fileChooser = new FileChooser();
-      fileChooser.setTitle("Save Canvas as PNG");
-      fileChooser.getExtensionFilters().add(
-          new FileChooser.ExtensionFilter("PNG Image", "*.png")
-      );
-      File file = fileChooser.showSaveDialog(canvas.getScene().getWindow());
-      if (file != null) {
-          try {
-              ImageIO.write(SwingFXUtils.fromFXImage(snapshot, null), "png", file);
-              System.out.println("Canvas saved to: " + file.getAbsolutePath());
-          } catch (IOException e) {
-              e.printStackTrace();
-          }
-      }
+        SnapshotParameters params = new SnapshotParameters();
+        params.setFill(Color.TRANSPARENT);
+        WritableImage snapshot = canvas.snapshot(params, null);
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Save Canvas as PNG");
+        fileChooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("PNG Image", "*.png")
+        );
+        File file = fileChooser.showSaveDialog(canvas.getScene().getWindow());
+        if (file != null) {
+            try {
+                ImageIO.write(SwingFXUtils.fromFXImage(snapshot, null), "png", file);
+                System.out.println("Canvas saved to: " + file.getAbsolutePath());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
     }
-    
-    // Double-click edit the text edit 
+
+    // DOUBLE-CLICK EDIT THE TEXT
     private void startInlineEdit(Text t) {
         TextField editor = new TextField(t.getText());
         editor.setStyle(
@@ -430,13 +528,10 @@ public class MainApp extends Application {
                 "-fx-background-radius: 8;"
         );
 
-        // Position editor over the text
         Bounds b = t.getBoundsInParent();
         editor.setLayoutX(b.getMinX());
         editor.setLayoutY(b.getMinY() - 18);
         editor.setPrefWidth(Math.max(160, b.getWidth() + 40));
-
-        
         editor.setFont(t.getFont());
 
         canvas.getChildren().add(editor);
@@ -478,7 +573,7 @@ public class MainApp extends Application {
                 "-fx-background-radius: 16;"
         );
 
-        Label title = new Label("AI Image");
+        Label title = new Label("AI Prompt");
         title.setStyle("-fx-font-size: 13; -fx-font-weight: bold;");
 
         TextArea prompt = new TextArea();
@@ -486,43 +581,125 @@ public class MainApp extends Application {
         prompt.setWrapText(true);
         prompt.setPrefRowCount(4);
 
-        Button generate = new Button("Generate");
+        Label status = new Label("");
+        status.setStyle("-fx-text-fill: #666; -fx-font-size: 11;");
+
+        Button generate = new Button("Generate Text");
         generate.setMaxWidth(Double.MAX_VALUE);
         styleButtonGraphite(generate);
 
-        // For now: insert placeholder rectangle (later I will replace with real ImageView when I connect the API 
-        generate.setOnAction(e -> insertAiPlaceholder(prompt.getText()));
+        generate.setOnAction(e -> generateAiText(prompt.getText(), generate, status));
 
-        box.getChildren().addAll(title, prompt, generate);
+        box.getChildren().addAll(title, prompt, status, generate);
         return box;
     }
 
-    private void insertAiPlaceholder(String promptText) {
-        Rectangle r = new Rectangle(320, 220);
-        r.setArcWidth(18);
-        r.setArcHeight(18);
-        r.setFill(Color.web("#f2f2f2"));
-        r.setStroke(Color.web("#cfcfcf"));
-        r.setStrokeWidth(2);
+    // AI TEXT GENERATION
+    private void generateAiText(String promptText, Button generateButton, Label statusLabel) {
+        if (promptText == null || promptText.trim().isEmpty()) {
+            Alert alert = new Alert(Alert.AlertType.WARNING, "Please enter a prompt first.");
+            alert.showAndWait();
+            return;
+        }
 
-        double x = (canvas.getPrefWidth() - r.getWidth()) / 2.0;
-        double y = (canvas.getPrefHeight() - r.getHeight()) / 2.0;
-        r.setLayoutX(Math.max(10, x));
-        r.setLayoutY(Math.max(10, y));
+        generateButton.setDisable(true);
+        generateButton.setText("Generating...");
+        statusLabel.setText("Generating text...");
 
-        enableDragAndSelect(r);
-        canvas.getChildren().add(r);
-        selectNode(r);
+        new Thread(() -> {
+            try {
+                String url =
+                        "https://generativelanguage.googleapis.com/v1beta/models/" +
+                        "gemini-3-flash-preview:generateContent";
 
-        // I will add subtitles later (Rafa) 
-        System.out.println("AI prompt: " + (promptText == null ? "" : promptText.trim()));
+                String fullPrompt =
+                        "Generate only the text the user asked for. " +
+                        "Do not add titles, bullet points, labels, quotation marks, or explanations unless the user asks for them. " +
+                        "Keep the response clean and ready to place in a design editor. " +
+                        "User request: " + promptText.trim();
+
+                String requestBody = """
+                {
+                  "contents": [{
+                    "parts": [
+                      { "text": %s }
+                    ]
+                  }]
+                }
+                """.formatted(mapper.writeValueAsString(fullPrompt));
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("x-goog-api-key", GEMINI_API_KEY)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                        .build();
+
+                HttpResponse<String> response =
+                        httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    throw new RuntimeException("HTTP " + response.statusCode() + ":\n" + response.body());
+                }
+
+                JsonNode root = mapper.readTree(response.body());
+                JsonNode candidates = root.path("candidates");
+
+                if (!candidates.isArray() || candidates.isEmpty()) {
+                    throw new RuntimeException("No response returned:\n" + response.body());
+                }
+
+                JsonNode parts = candidates.get(0).path("content").path("parts");
+
+                String aiText = null;
+                if (parts.isArray()) {
+                    for (JsonNode part : parts) {
+                        JsonNode textNode = part.path("text");
+                        if (!textNode.isMissingNode() && !textNode.isNull()) {
+                            aiText = textNode.asText();
+                            if (aiText != null && !aiText.isBlank()) {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (aiText == null || aiText.isBlank()) {
+                    throw new RuntimeException("No text returned:\n" + response.body());
+                }
+
+                String finalText = aiText.trim()
+                        .replace("*", "")
+                        .replace("#", "")
+                        .replace("\"", "");
+
+                Platform.runLater(() -> {
+                    addTextToCanvas(finalText);
+                    statusLabel.setText("Text added to canvas.");
+                    generateButton.setDisable(false);
+                    generateButton.setText("Generate Text");
+                });
+
+            } catch (Exception ex) {
+                Platform.runLater(() -> {
+                    generateButton.setDisable(false);
+                    generateButton.setText("Generate Text");
+                    statusLabel.setText("Generation failed.");
+
+                    Alert alert = new Alert(
+                            Alert.AlertType.ERROR,
+                            "Text generation failed:\n" + ex.getMessage()
+                    );
+                    alert.showAndWait();
+                });
+            }
+        }).start();
     }
 
-    //SELECTION + DELETE 
+    // SELECTION + DELETE
     private void selectNode(Node n) {
         selectedNode = n;
 
-        // If selecting Text, sync controls to the selected text
         if (n instanceof Text t) {
             textColorPicker.setValue((Color) t.getFill());
             fontSizeSpinner.getValueFactory().setValue((int) t.getFont().getSize());
@@ -542,10 +719,8 @@ public class MainApp extends Application {
         Bounds b = null;
 
         if (selectedNode instanceof Group g) {
-            // find the first ImageView inside the group
             for (Node child : g.getChildren()) {
                 if (child instanceof ImageView iv) {
-                    // convert ImageView bounds to Scene coordinates, then to canvas coordinates
                     Bounds sceneBounds = iv.localToScene(iv.getBoundsInLocal());
                     Bounds canvasBounds = canvas.sceneToLocal(sceneBounds);
 
@@ -555,15 +730,15 @@ public class MainApp extends Application {
                             canvasBounds.getWidth(),
                             canvasBounds.getHeight()
                     );
-                    break; // use the first ImageView only
+                    break;
                 }
             }
         }
 
         if (b == null) {
-            // fallback for Text, Rectangle, or other nodes
             b = selectedNode.getBoundsInParent();
         }
+
         selectionBox = new Rectangle(b.getMinX(), b.getMinY(), b.getWidth(), b.getHeight());
         selectionBox.setFill(Color.TRANSPARENT);
         selectionBox.setStroke(Color.web("#4a90e2"));
@@ -590,7 +765,7 @@ public class MainApp extends Application {
         updateHandlesVisibility(null);
     }
 
-    // DRAG + SELECT + DOUBLE CLICK EDIT 
+    // DRAG + SELECT + DOUBLE CLICK EDIT
     private void enableDragSelectAndEdit(Text t) {
         final Delta d = new Delta();
 
@@ -636,17 +811,17 @@ public class MainApp extends Application {
         });
     }
 
-    private static class Delta { double x, y; }
+    private static class Delta {
+        double x, y;
+    }
 
-    // STYLES 
+    // STYLES
     private void styleButton(Button b) {
-
         b.setMaxWidth(Double.MAX_VALUE);
         styleButtonGraphite(b);
     }
 
     private void styleButtonGraphite(Button b) {
-        // graphite button
         b.setStyle(
                 "-fx-background-color: #5C5C5C;" +
                 "-fx-text-fill: white;" +
@@ -669,6 +844,14 @@ public class MainApp extends Application {
                 "-fx-padding: 6 10;" +
                 "-fx-font-size: 13;"
         );
+        
+        b.lookup(".label");
+        Platform.runLater(() -> {
+            Label label = (Label) b.lookup(".label");
+            if(label != null){
+                label.setTextFill(Color.WHITE);
+            }
+        });
     }
 
     private void stylePicker(ColorPicker p) {
