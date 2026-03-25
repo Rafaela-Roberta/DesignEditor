@@ -393,7 +393,7 @@ public class MainApp extends Application {
         selectNode(g);
     }
 
-    // RESIZE IMAGE WITH INDICATOR
+    // resize image with indicator
     private void enableResize(ImageView iv, Group g) {
         final double handleSize = 10;
 
@@ -406,17 +406,17 @@ public class MainApp extends Application {
 
         Runnable updateHandles = () -> {
             Bounds b = iv.getBoundsInParent();
-            topLeft.setX(b.getMinX() - handleSize / 2);
-            topLeft.setY(b.getMinY() - handleSize / 2);
+            topLeft.setX(b.getMinX() - handleSize/2);
+            topLeft.setY(b.getMinY() - handleSize/2);
 
-            topRight.setX(b.getMaxX() - handleSize / 2);
-            topRight.setY(b.getMinY() - handleSize / 2);
+            topRight.setX(b.getMaxX() - handleSize/2);
+            topRight.setY(b.getMinY() - handleSize/2);
 
-            bottomLeft.setX(b.getMinX() - handleSize / 2);
-            bottomLeft.setY(b.getMaxY() - handleSize / 2);
+            bottomLeft.setX(b.getMinX() - handleSize/2);
+            bottomLeft.setY(b.getMaxY() - handleSize/2);
 
-            bottomRight.setX(b.getMaxX() - handleSize / 2);
-            bottomRight.setY(b.getMaxY() - handleSize / 2);
+            bottomRight.setX(b.getMaxX() - handleSize/2);
+            bottomRight.setY(b.getMaxY() - handleSize/2);
         };
 
         updateHandles.run();
@@ -426,12 +426,19 @@ public class MainApp extends Application {
             final double[] initHeight = new double[1];
             final double[] mouseStartX = new double[1];
             final double[] mouseStartY = new double[1];
-
+            
+            final double[] startLayoutX = new double[1];
+            final double[] startLayoutY = new double[1];
+            
             handle.setOnMousePressed(e -> {
                 initWidth[0] = iv.getFitWidth();
                 initHeight[0] = iv.getFitHeight();
                 mouseStartX[0] = e.getSceneX();
                 mouseStartY[0] = e.getSceneY();
+                
+                startLayoutX[0] = g.getLayoutX();
+                startLayoutY[0] = g.getLayoutY();
+                
                 selectNode(g);
                 e.consume();
             });
@@ -440,37 +447,60 @@ public class MainApp extends Application {
                 double deltaX = e.getSceneX() - mouseStartX[0];
                 double deltaY = e.getSceneY() - mouseStartY[0];
 
-                double newWidth = initWidth[0];
-                double newHeight = initHeight[0];
+                double delta = 0;
 
                 switch(corner) {
                     case "topLeft":
-                        newWidth  = Math.max(20, initWidth[0] - deltaX);
-                        newHeight = Math.max(20, initHeight[0] - deltaY);
+                        delta = Math.min(-deltaX, -deltaY);
                         break;
                     case "topRight":
-                        newWidth  = Math.max(20, initWidth[0] + deltaX);
-                        newHeight = Math.max(20, initHeight[0] - deltaY);
+                        delta = Math.min(deltaX, -deltaY);
                         break;
                     case "bottomLeft":
-                        newWidth  = Math.max(20, initWidth[0] - deltaX);
-                        newHeight = Math.max(20, initHeight[0] + deltaY);
+                        delta = Math.min(-deltaX, deltaY);
                         break;
                     case "bottomRight":
-                        newWidth  = Math.max(20, initWidth[0] + deltaX);
-                        newHeight = Math.max(20, initHeight[0] + deltaY);
+                        delta = Math.min(deltaX, deltaY);
                         break;
                 }
+                double newWidth  = initWidth[0]  + delta;
+                double newHeight = initHeight[0] + delta;
+                
+                final double MIN_SIZE = 20;
+                
+                newWidth  = Math.max(MIN_SIZE, newWidth);
+                newHeight = Math.max(MIN_SIZE, newHeight);
 
+                switch(corner) {
+                    case "topLeft":
+                        if (newWidth > MIN_SIZE){
+                          g.setLayoutX(startLayoutX[0] - delta);
+                          g.setLayoutY(startLayoutY[0] - delta);
+                        }
+                        break;
+                    case "topRight":
+                        if (newWidth > MIN_SIZE){
+                          g.setLayoutY(startLayoutY[0] - delta);
+                        }
+                        break;
+                    case "bottomLeft":
+                        if (newWidth > MIN_SIZE){
+                          g.setLayoutX(startLayoutX[0] - delta);
+                        }
+                        break;
+                    case "bottomRight":
+                        break;
+                }
+                
+                iv.setPreserveRatio(true);
                 iv.setFitWidth(newWidth);
-                iv.setFitHeight(newHeight);
 
                 updateHandles.run();
                 updateSelectionBox();
                 e.consume();
             });
         };
-
+        
         setupDrag.accept(topLeft, "topLeft");
         setupDrag.accept(topRight, "topRight");
         setupDrag.accept(bottomLeft, "bottomLeft");
@@ -497,25 +527,42 @@ public class MainApp extends Application {
         }
     }
 
-    // EXPORT TO PNG
+    // export to png
     private void exportCanvasToPNG() {
-        SnapshotParameters params = new SnapshotParameters();
-        params.setFill(Color.TRANSPARENT);
-        WritableImage snapshot = canvas.snapshot(params, null);
-        FileChooser fileChooser = new FileChooser();
-        fileChooser.setTitle("Save Canvas as PNG");
-        fileChooser.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("PNG Image", "*.png")
-        );
-        File file = fileChooser.showSaveDialog(canvas.getScene().getWindow());
-        if (file != null) {
-            try {
-                ImageIO.write(SwingFXUtils.fromFXImage(snapshot, null), "png", file);
-                System.out.println("Canvas saved to: " + file.getAbsolutePath());
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
+      // Take snapshot of the canvas
+      updateHandlesVisibility(null);
+      clearSelection();
+      
+      Rectangle clip = new Rectangle(canvas.getWidth(), canvas.getHeight());
+      canvas.setClip(clip);
+      
+      SnapshotParameters params = new SnapshotParameters();
+      params.setFill(Color.WHITE); 
+      
+//      WritableImage snapshot = canvas.snapshot(params, null);
+      
+      WritableImage snapshot = new WritableImage(
+          (int) canvas.getWidth(),
+          (int) canvas.getHeight()
+      );
+      canvas.snapshot(params, snapshot);
+      
+      canvas.setClip(null);
+      
+      FileChooser fileChooser = new FileChooser();
+      fileChooser.setTitle("Save Canvas as PNG");
+      fileChooser.getExtensionFilters().add(
+          new FileChooser.ExtensionFilter("PNG Image", "*.png")
+      );
+      File file = fileChooser.showSaveDialog(canvas.getScene().getWindow());
+      if (file != null) {
+          try {
+              ImageIO.write(SwingFXUtils.fromFXImage(snapshot, null), "png", file);
+              System.out.println("Canvas saved to: " + file.getAbsolutePath());
+          } catch (IOException e) {
+              e.printStackTrace();
+          }
+      }
     }
 
     // DOUBLE-CLICK EDIT THE TEXT
